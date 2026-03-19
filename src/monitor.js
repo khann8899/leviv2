@@ -47,7 +47,7 @@ async function checkPosition(position, wallet, sendMessage) {
     }
   }
 
-  // Trailing stop
+  // Trailing stop (only after price went up 20%+)
   if (position.peakPrice > position.entryPrice * 1.2) {
     if (dropFromPeak >= config.trailingStopPercent) {
       if (position.isPaper) {
@@ -69,6 +69,8 @@ async function checkPosition(position, wallet, sendMessage) {
     return;
   }
 }
+
+// ==================== PAPER FUNCTIONS ====================
 
 async function executePaperTakeProfit(position, tp, multiplier, sendMessage) {
   const sellPercent = tp.sellPercent;
@@ -100,21 +102,20 @@ async function closePaperPosition(position, reason, multiplier, sendMessage) {
   if (multiplier > state.paperStats.bestMultiplier) state.paperStats.bestMultiplier = multiplier;
 
   await sendMessage(
-    `📝${isWin ? '🏆' : '🔴'} *Paper Position Closed — ${reason}*\n\n` +
+    `📝${isWin ? '🏆' : '🔴'} *Paper Closed — ${reason}*\n\n` +
     `$${position.symbol} | ${multiplier.toFixed(2)}x\n` +
     `P&L: ${isWin ? '+' : ''}$${pnl.toFixed(2)}\n` +
     `Paper balance: $${state.paperBalance.toFixed(2)}`
   );
 
   delete state.paperPositions[position.mintAddress];
-  // Also remove from autoPositions if it was an auto paper trade
-  if (state.autoPositions[position.mintAddress]) {
-    delete state.autoPositions[position.mintAddress];
-  }
+  if (state.autoPositions[position.mintAddress]) delete state.autoPositions[position.mintAddress];
   saveState();
 }
 
+// ==================== REAL FUNCTIONS ====================
 
+async function executeTakeProfit(position, tp, multiplier, wallet, sendMessage) {
   const sellPercent = tp.sellPercent;
   const tokensToSell = position.tokensHeld * (sellPercent / 100) * (position.remainingPercent / 100);
 
@@ -155,7 +156,6 @@ async function closePosition(position, reason, multiplier, wallet, sendMessage) 
 
     updateStats(position, result.usdReceived, originalBet, multiplier, true);
 
-    // Remove from positions
     if (position.isAuto) {
       delete state.autoPositions[position.mintAddress];
     } else {
@@ -166,21 +166,28 @@ async function closePosition(position, reason, multiplier, wallet, sendMessage) 
   }
 }
 
-// Close all auto positions
 async function closeAllAutoPositions(wallet, sendMessage) {
   const positions = Object.values(state.autoPositions);
   let totalUSD = 0;
 
   for (const position of positions) {
     try {
-      const remainingTokens = position.tokensHeld * (position.remainingPercent / 100);
-      const result = await sellToken(position.mintAddress, 100, remainingTokens, wallet);
-      if (result.success) {
-        totalUSD += result.usdReceived;
+      if (position.isPaper) {
+        const usdReceived = position.amountUSD * (position.remainingPercent / 100);
+        state.paperBalance += usdReceived;
+        totalUSD += usdReceived;
         delete state.autoPositions[position.mintAddress];
+        delete state.paperPositions[position.mintAddress];
+      } else {
+        const remainingTokens = position.tokensHeld * (position.remainingPercent / 100);
+        const result = await sellToken(position.mintAddress, 100, remainingTokens, wallet);
+        if (result.success) {
+          totalUSD += result.usdReceived;
+          delete state.autoPositions[position.mintAddress];
+        }
       }
     } catch (e) {
-      console.error(`Failed to close auto position ${position.symbol}: ${e.message}`);
+      console.error(`Failed to close ${position.symbol}: ${e.message}`);
     }
   }
 
@@ -188,7 +195,6 @@ async function closeAllAutoPositions(wallet, sendMessage) {
   return totalUSD;
 }
 
-// Close all manual positions
 async function closeAllManualPositions(wallet, sendMessage) {
   const positions = Object.values(state.manualPositions);
   let totalUSD = 0;
@@ -202,7 +208,7 @@ async function closeAllManualPositions(wallet, sendMessage) {
         delete state.manualPositions[position.mintAddress];
       }
     } catch (e) {
-      console.error(`Failed to close manual position ${position.symbol}: ${e.message}`);
+      console.error(`Failed to close ${position.symbol}: ${e.message}`);
     }
   }
 
