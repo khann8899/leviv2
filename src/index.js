@@ -168,7 +168,56 @@ async function main() {
     }
   });
 
-  // Autostatus
+  // Add paper balance
+  bot.onText(/^\/addpaper (.+)$/, async (msg, match) => {
+    if (!isAuthorized(msg)) return;
+    const amount = parseFloat(match[1].replace('$', ''));
+    if (isNaN(amount) || amount <= 0) { await send('❌ Example: /addpaper 100'); return; }
+    state.paperBalance += amount;
+    saveState();
+    await send(`📝 *Paper Balance Updated*\n\nAdded: $${amount}\nNew balance: $${state.paperBalance.toFixed(2)}`);
+  });
+
+  // Set autobet take profits
+  bot.onText(/^\/setautotp (.+)$/, async (msg, match) => {
+    if (!isAuthorized(msg)) return;
+    // Format: /setautotp 1.7x50 2x50
+    const parts = match[1].trim().split(' ');
+    if (parts.length !== 2) {
+      await send('❌ Format: /setautotp 1.7x50 2x50\n(TP1: 1.7x sell 50%, TP2: 2x sell 50%)');
+      return;
+    }
+    try {
+      const [m1, s1] = parts[0].split('x').map(Number);
+      const [m2, s2] = parts[1].split('x').map(Number);
+      if (!m1 || !s1 || !m2 || !s2) throw new Error('Invalid format');
+      state.autobetTakeProfits = [
+        { multiplier: m1, sellPercent: s1 },
+        { multiplier: m2, sellPercent: s2 },
+      ];
+      saveState();
+      await send(
+        `✅ *Autobet TPs Updated*\n\n` +
+        `TP1: ${m1}x → sell ${s1}%\n` +
+        `TP2: ${m2}x → sell ${s2}%\n\n` +
+        `Applies to both real and paper autobet.`
+      );
+    } catch {
+      await send('❌ Format: /setautotp 1.7x50 2x50');
+    }
+  });
+
+  // Set autobet stop loss
+  bot.onText(/^\/setautosl (.+)$/, async (msg, match) => {
+    if (!isAuthorized(msg)) return;
+    const sl = parseFloat(match[1].replace('%', ''));
+    if (isNaN(sl) || sl <= 0 || sl > 100) { await send('❌ Example: /setautosl 25'); return; }
+    state.autobetStopLoss = sl;
+    saveState();
+    await send(`✅ *Autobet Stop Loss: -${sl}%*\n\nApplies to both real and paper autobet.`);
+  });
+
+
   bot.onText(/^\/autostatus$/, async (msg) => {
     if (!isAuthorized(msg)) return;
     const s = state.autobetStats;
@@ -402,14 +451,13 @@ async function main() {
 
   async function executeAutobetTrade(coin, wallet) {
     if (state.isPaperMode) {
-      // Paper autobet
       if (state.paperBalance < state.betSizeUSD) return;
       state.paperBalance -= state.betSizeUSD;
       const position = createPosition(coin, coin.priceUSD, state.betSizeUSD, state.currentMode, true, true);
-      position.tokensHeld = state.betSizeUSD / coin.priceUSD;
-      state.autoPositions[coin.mintAddress] = position;
+      position.tokensHeld = coin.priceUSD > 0 ? state.betSizeUSD / coin.priceUSD : 1;
+      state.paperPositions[coin.mintAddress] = position;
       saveState();
-      await send(`📝🤖 *Paper Autobet Opened*\n\n$${coin.symbol} | Score: ${coin.score}/10 | $${state.betSizeUSD}`);
+      await send(`📝🤖 *Paper Autobet Opened*\n\n$${coin.symbol} | Score: ${coin.score}/10 | $${state.betSizeUSD}\nPaper balance: $${state.paperBalance.toFixed(2)}`);
       return;
     }
 

@@ -1,6 +1,6 @@
 // Levi Urgent 2.0 - Position Monitor
 const { state, saveState } = require('./state');
-const { MODES, AUTOBET_CONFIG } = require('../config/modes');
+const { MODES, getAutobetConfig } = require('../config/modes');
 const { getTokenPrice } = require('./data');
 const { sellToken } = require('./execution');
 
@@ -8,10 +8,10 @@ async function monitorAllPositions(wallet, sendMessage) {
   const allPositions = [
     ...Object.values(state.manualPositions),
     ...Object.values(state.autoPositions),
+    ...Object.values(state.paperPositions),
   ];
 
   for (const position of allPositions) {
-    if (position.isPaper) continue; // Paper positions handled separately
     try {
       await checkPosition(position, wallet, sendMessage);
     } catch (e) {
@@ -31,34 +31,90 @@ async function checkPosition(position, wallet, sendMessage) {
   const dropFromPeak = ((position.peakPrice - currentPrice) / position.peakPrice) * 100;
   const dropFromEntry = ((position.entryPrice - currentPrice) / position.entryPrice) * 100;
 
-  const config = position.isAuto ? AUTOBET_CONFIG : MODES[position.mode];
+  const config = position.isAuto ? getAutobetConfig() : MODES[position.mode];
   const takeProfits = config.takeProfits;
 
   // Check take profits
   if (position.takeProfitIndex < takeProfits.length) {
     const nextTP = takeProfits[position.takeProfitIndex];
     if (multiplier >= nextTP.multiplier) {
-      await executeTakeProfit(position, nextTP, multiplier, wallet, sendMessage);
+      if (position.isPaper) {
+        await executePaperTakeProfit(position, nextTP, multiplier, sendMessage);
+      } else {
+        await executeTakeProfit(position, nextTP, multiplier, wallet, sendMessage);
+      }
       return;
     }
   }
 
-  // Trailing stop (only after price went up 20%+)
+  // Trailing stop
   if (position.peakPrice > position.entryPrice * 1.2) {
     if (dropFromPeak >= config.trailingStopPercent) {
-      await closePosition(position, 'Trailing Stop 📉', multiplier, wallet, sendMessage);
+      if (position.isPaper) {
+        await closePaperPosition(position, 'Trailing Stop 📉', multiplier, sendMessage);
+      } else {
+        await closePosition(position, 'Trailing Stop 📉', multiplier, wallet, sendMessage);
+      }
       return;
     }
   }
 
   // Hard stop loss
   if (dropFromEntry >= config.stopLossPercent) {
-    await closePosition(position, 'Stop Loss 🛑', multiplier, wallet, sendMessage);
+    if (position.isPaper) {
+      await closePaperPosition(position, 'Stop Loss 🛑', multiplier, sendMessage);
+    } else {
+      await closePosition(position, 'Stop Loss 🛑', multiplier, wallet, sendMessage);
+    }
     return;
   }
 }
 
-async function executeTakeProfit(position, tp, multiplier, wallet, sendMessage) {
+async function executePaperTakeProfit(position, tp, multiplier, sendMessage) {
+  const sellPercent = tp.sellPercent;
+  const usdReceived = position.amountUSD * (sellPercent / 100) * multiplier;
+
+  position.remainingPercent -= (sellPercent * position.remainingPercent / 100);
+  position.takeProfitIndex += 1;
+  state.paperBalance += usdReceived;
+
+  await sendMessage(
+    `📝💰 *Paper TP ${position.takeProfitIndex} Hit!*\n\n` +
+    `$${position.symbol} hit ${multiplier.toFixed(2)}x\n` +
+    `Received: $${usdReceived.toFixed(2)}\n` +
+    `Paper balance: $${state.paperBalance.toFixed(2)}`
+  );
+  saveState();
+}
+
+async function closePaperPosition(position, reason, multiplier, sendMessage) {
+  const originalBet = position.amountUSD * (position.remainingPercent / 100);
+  const usdReceived = originalBet * multiplier;
+  const pnl = usdReceived - originalBet;
+  const isWin = pnl > 0;
+
+  state.paperBalance += usdReceived;
+  state.paperStats.trades += 1;
+  if (isWin) state.paperStats.wins += 1; else state.paperStats.losses += 1;
+  state.paperStats.netPnlUSD += pnl;
+  if (multiplier > state.paperStats.bestMultiplier) state.paperStats.bestMultiplier = multiplier;
+
+  await sendMessage(
+    `📝${isWin ? '🏆' : '🔴'} *Paper Position Closed — ${reason}*\n\n` +
+    `$${position.symbol} | ${multiplier.toFixed(2)}x\n` +
+    `P&L: ${isWin ? '+' : ''}$${pnl.toFixed(2)}\n` +
+    `Paper balance: $${state.paperBalance.toFixed(2)}`
+  );
+
+  delete state.paperPositions[position.mintAddress];
+  // Also remove from autoPositions if it was an auto paper trade
+  if (state.autoPositions[position.mintAddress]) {
+    delete state.autoPositions[position.mintAddress];
+  }
+  saveState();
+}
+
+
   const sellPercent = tp.sellPercent;
   const tokensToSell = position.tokensHeld * (sellPercent / 100) * (position.remainingPercent / 100);
 

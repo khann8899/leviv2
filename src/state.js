@@ -21,6 +21,11 @@ const defaultState = {
   autobetActive: false,
   autobetPaused: false,
   autobetSlots: 5,
+  autobetTakeProfits: [
+    { multiplier: 1.7, sellPercent: 50 },
+    { multiplier: 2.0, sellPercent: 50 },
+  ],
+  autobetStopLoss: 25,
 
   // Paper trading
   paperBalance: 100,
